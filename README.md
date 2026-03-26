@@ -42,3 +42,10 @@ zunit -- --fail-if-no-tests          # fail if no tests found
 ### Cache
 
 The JUnit Console Standalone JAR is downloaded once and cached in `~/.zunit/`.
+
+## References
+
+- [bce.design](https://bce.design) — Boundary-Control-Entity architecture
+- [zcl](https://github.com/AdamBien/zcl) — Zero-dependency Colour Logger
+- [zcfg](https://github.com/AdamBien/zcfg) — Zero-dependency Configuration Utility
+- [zb](https://github.com/AdamBien/zb) — Zero-dependency Builder
