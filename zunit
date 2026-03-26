@@ -1,0 +1,302 @@
+#!/usr/bin/env -S java --source 25
+
+/**
+ * zunit - Downloads JUnit Console Standalone JAR and runs all tests.
+ *
+ * Downloads the JUnit Platform Console Standalone JAR from Maven Central
+ * (cached in ~/.zunit/) and runs tests found on the classpath.
+ *
+ * Classpath auto-detection (in order):
+ *   target/test-classes + target/classes  (Maven)
+ *   build/classes                         (Gradle)
+ *   classes/                              (simple)
+ *   .                                     (fallback)
+ *
+ * Examples:
+ *   zunit                                 # auto-detect and run
+ *   zunit -cp:target/test-classes         # explicit classpath
+ *   zunit -version:1.11.2                 # specific JUnit version
+ *   zunit -- --include-tag=fast           # pass args to JUnit
+ *
+ * Logging based on https://github.com/AdamBien/zcl
+ */
+
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+String version = "2026-03-25.1";
+
+static final String DEFAULT_JUNIT_VERSION = "1.12.2";
+static final String MAVEN_URL = "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/%s/junit-platform-console-standalone-%s.jar";
+static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".zunit");
+
+enum Log {
+
+    ERROR(Color.BRIGHT_RED, System.err),
+    INFO(Color.BRIGHT_GREEN, System.out),
+    WARNING(Color.WARM_YELLOW, System.out),
+    DEBUG(Color.SOFT_PURPLE, System.out);
+
+    PrintStream out;
+
+    enum Color {
+        WARM_YELLOW("\033[38;5;220m"),
+        BRIGHT_RED("\033[38;5;196m"),
+        BRIGHT_GREEN("\033[38;5;46m"),
+        SOFT_PURPLE("\033[38;5;129m");
+
+        String code;
+
+        Color(String code) {
+            this.code = code;
+        }
+    }
+
+    String value;
+    static final String RESET = "\u001B[0m";
+
+    Log(Color color, PrintStream out) {
+        this.value = color.code + "%s" + RESET;
+        this.out = out;
+    }
+
+    void out(String message) {
+        this.out.println(this.value.formatted(message));
+    }
+
+    static void info(String message) {
+        INFO.out(message);
+    }
+
+    static void debug(String message) {
+        DEBUG.out(message);
+    }
+
+    static void error(String message) {
+        ERROR.out(message);
+    }
+
+    static void stop(String message) {
+        ERROR.out(message);
+        System.exit(1);
+    }
+}
+
+enum Arg {
+    HELP("-help", "Show this help"),
+    VERSION("-version", "JUnit version (default: " + DEFAULT_JUNIT_VERSION + ")"),
+    CP("-cp", "Override classpath (colon-separated)"),
+    VERBOSE("-verbose", "Show download progress and debug info");
+
+    final String option;
+    final String description;
+
+    Arg(String option, String description) {
+        this.option = option;
+        this.description = description;
+    }
+
+    boolean matches(String value) {
+        return this.option.equals(value)
+            || value.startsWith(this.option + ":");
+    }
+
+    static Arg from(String value) {
+        return Stream.of(values())
+            .filter(a -> a.matches(value))
+            .findFirst()
+            .orElse(null);
+    }
+
+    static String usage() {
+        return Stream.of(values())
+            .map(a -> {
+                var label = switch (a) {
+                    case VERSION -> a.option + ":<ver>";
+                    case CP -> a.option + ":<path>";
+                    default -> a.option;
+                };
+                return "  %-20s %s".formatted(label, a.description);
+            })
+            .collect(Collectors.joining("\n"));
+    }
+}
+
+record Config(String junitVersion, String classpath, boolean verbose, List<String> junitArgs) {}
+
+void main(String... args) {
+    var config = parseArgs(args);
+
+    Log.info("zunit " + version);
+
+    var jar = resolveJar(config.junitVersion(), config.verbose());
+    var classpath = resolveClasspath(jar, config.classpath(), config.verbose());
+
+    runTests(jar, classpath, config.junitArgs(), config.verbose());
+}
+
+Config parseArgs(String[] args) {
+    var junitVersion = DEFAULT_JUNIT_VERSION;
+    String classpath = null;
+    var verbose = false;
+    var junitArgs = new ArrayList<String>();
+    var passthrough = false;
+
+    for (int i = 0; i < args.length; i++) {
+        var arg = args[i];
+        if (passthrough) {
+            junitArgs.add(arg);
+            continue;
+        }
+        if ("--".equals(arg)) {
+            passthrough = true;
+            continue;
+        }
+        switch (Arg.from(arg)) {
+            case HELP -> printUsage();
+            case VERSION -> junitVersion = extractValue(arg);
+            case CP -> classpath = extractValue(arg);
+            case VERBOSE -> verbose = true;
+            case null -> {
+                if (arg.startsWith("-")) Log.stop("Unknown option: " + arg);
+                junitArgs.add(arg);
+            }
+        }
+    }
+    return new Config(junitVersion, classpath, verbose, List.copyOf(junitArgs));
+}
+
+String extractValue(String arg) {
+    var idx = arg.indexOf(":");
+    if (idx < 0 || idx + 1 >= arg.length()) {
+        Log.stop("Missing value for " + arg);
+    }
+    return arg.substring(idx + 1);
+}
+
+Path resolveJar(String junitVersion, boolean verbose) {
+    var jarName = "junit-platform-console-standalone-%s.jar".formatted(junitVersion);
+    var jarPath = CACHE_DIR.resolve(jarName);
+
+    if (Files.exists(jarPath)) {
+        if (verbose) Log.debug("Using cached: " + jarPath);
+        return jarPath;
+    }
+
+    var url = MAVEN_URL.formatted(junitVersion, junitVersion);
+    Log.info("Downloading JUnit %s ...".formatted(junitVersion));
+    if (verbose) Log.debug("URL: " + url);
+
+    try {
+        Files.createDirectories(CACHE_DIR);
+        var client = HttpClient.newHttpClient();
+        var request = HttpRequest.newBuilder(URI.create(url)).GET().build();
+        var response = client.send(request, HttpResponse.BodyHandlers.ofFile(jarPath));
+
+        if (response.statusCode() != 200) {
+            Files.deleteIfExists(jarPath);
+            Log.stop("Download failed: HTTP " + response.statusCode());
+        }
+
+        Log.info("Cached: " + jarPath);
+        return jarPath;
+    } catch (IOException | InterruptedException e) {
+        try { Files.deleteIfExists(jarPath); } catch (IOException ignored) {}
+        Log.stop("Download failed: " + e.getMessage());
+        return null;
+    }
+}
+
+String resolveClasspath(Path jar, String explicitCp, boolean verbose) {
+    var entries = new ArrayList<String>();
+    entries.add(jar.toString());
+
+    if (explicitCp != null) {
+        entries.add(explicitCp);
+    } else {
+        var detected = detectClasspath();
+        entries.addAll(detected);
+    }
+
+    var cp = String.join(File.pathSeparator, entries);
+    if (verbose) Log.debug("Classpath: " + cp);
+    return cp;
+}
+
+List<String> detectClasspath() {
+    var entries = new ArrayList<String>();
+
+    // Maven layout
+    if (Files.isDirectory(Path.of("target", "test-classes"))) {
+        entries.add("target/test-classes");
+        if (Files.isDirectory(Path.of("target", "classes")))
+            entries.add("target/classes");
+        return entries;
+    }
+
+    // Gradle layout
+    var gradleTest = Path.of("build", "classes", "java", "test");
+    var gradleMain = Path.of("build", "classes", "java", "main");
+    if (Files.isDirectory(gradleTest)) {
+        entries.add(gradleTest.toString());
+        if (Files.isDirectory(gradleMain))
+            entries.add(gradleMain.toString());
+        return entries;
+    }
+
+    // Simple layout
+    if (Files.isDirectory(Path.of("classes"))) {
+        entries.add("classes");
+        return entries;
+    }
+
+    // Fallback
+    entries.add(".");
+    return entries;
+}
+
+void runTests(Path jar, String classpath, List<String> extraArgs, boolean verbose) {
+    var command = new ArrayList<String>();
+    command.add("java");
+    command.add("-jar");
+    command.add(jar.toString());
+    command.add("execute");
+    command.add("--class-path");
+    command.add(classpath);
+    command.add("--scan-classpath");
+    command.add("--details=tree");
+    command.addAll(extraArgs);
+
+    if (verbose) Log.debug("Command: " + String.join(" ", command));
+
+    try {
+        var process = new ProcessBuilder(command)
+            .inheritIO()
+            .start();
+        System.exit(process.waitFor());
+    } catch (IOException | InterruptedException e) {
+        Log.stop("Failed to run tests: " + e.getMessage());
+    }
+}
+
+void printUsage() {
+    IO.println("""
+        zunit - Zero-dependency JUnit test runner
+
+        Usage: zunit [options] [-- junit-args...]
+
+        Options:
+        %s
+
+        Everything after -- is passed to JUnit Console Launcher.
+
+        Examples:
+          zunit                               Auto-detect and run all tests
+          zunit -cp:target/test-classes       Explicit classpath
+          zunit -version:1.11.2               Use specific JUnit version
+          zunit -- --include-tag=fast         Filter by tag
+          zunit -- --fail-if-no-tests         Fail if no tests found
+        """.formatted(Arg.usage()));
+    System.exit(0);
+}
