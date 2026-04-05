@@ -234,17 +234,6 @@ List<String> detectClasspath() {
             entries.add("target/classes");
         return entries;
     }
-
-    // Gradle layout
-    var gradleTest = Path.of("build", "classes", "java", "test");
-    var gradleMain = Path.of("build", "classes", "java", "main");
-    if (Files.isDirectory(gradleTest)) {
-        entries.add(gradleTest.toString());
-        if (Files.isDirectory(gradleMain))
-            entries.add(gradleMain.toString());
-        return entries;
-    }
-
     // Simple layout
     if (Files.isDirectory(Path.of("classes"))) {
         entries.add("classes");
