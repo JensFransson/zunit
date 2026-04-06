@@ -1,35 +1,37 @@
 #!/usr/bin/env -S java --source 25
 
 /**
- * zunit - Downloads JUnit Console Standalone JAR and runs all tests.
+ * zunit - Minimal, zero-dependency test runner for Java.
  *
- * Downloads the JUnit Platform Console Standalone JAR from Maven Central
- * (cached in ~/.zunit/) and runs tests found on the classpath.
+ * Discovers test classes on the classpath and executes all public
+ * void zero-arg methods via reflection. No JUnit required.
+ *
+ * Test convention:
+ *   - Test classes: name ends with "Test", public no-arg constructor
+ *   - Test methods: public void, zero arguments
+ *   - Lifecycle: setUp() before each test, tearDown() after (optional)
+ *   - Failure: any thrown exception marks the test as failed
  *
  * Classpath auto-detection (in order):
  *   target/test-classes + target/classes  (Maven)
- *   build/classes                         (Gradle)
  *   classes/                              (simple)
  *   .                                     (fallback)
  *
  * Examples:
  *   zunit                                 # auto-detect and run
  *   zunit -cp:target/test-classes         # explicit classpath
- *   zunit -version:1.11.2                 # specific JUnit version
- *   zunit -- --include-tag=fast           # pass args to JUnit
  *
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.net.URL;
+import java.net.URLClassLoader;
 
-String version = "2026-03-25.1";
+String version = "2026-04-06.1";
 
-static final String DEFAULT_JUNIT_VERSION = "1.12.2";
-static final String MAVEN_URL = "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/%s/junit-platform-console-standalone-%s.jar";
-static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".zunit");
+static final Set<String> EXCLUDED_METHODS = Set.of("setUp", "tearDown", "main");
 
 enum Log {
 
@@ -85,9 +87,8 @@ enum Log {
 
 enum Arg {
     HELP("-help", "Show this help"),
-    VERSION("-version", "JUnit version (default: " + DEFAULT_JUNIT_VERSION + ")"),
     CP("-cp", "Override classpath (colon-separated)"),
-    VERBOSE("-verbose", "Show download progress and debug info");
+    VERBOSE("-verbose", "Show debug info");
 
     final String option;
     final String description;
@@ -113,7 +114,6 @@ enum Arg {
         return Stream.of(values())
             .map(a -> {
                 var label = switch (a) {
-                    case VERSION -> a.option + ":<ver>";
                     case CP -> a.option + ":<path>";
                     default -> a.option;
                 };
@@ -123,48 +123,43 @@ enum Arg {
     }
 }
 
-record Config(String junitVersion, String classpath, boolean verbose, List<String> junitArgs) {}
+record Config(String classpath, boolean verbose) {}
+
+record TestResult(String className, String methodName, boolean passed, String message) {}
 
 void main(String... args) {
     var config = parseArgs(args);
 
     Log.info("zunit " + version);
 
-    var jar = resolveJar(config.junitVersion(), config.verbose());
-    var classpath = resolveClasspath(jar, config.classpath(), config.verbose());
+    var classpath = resolveClasspath(config.classpath(), config.verbose());
+    var testClasses = discoverTests(classpath, config.verbose());
 
-    runTests(jar, classpath, config.junitArgs(), config.verbose());
+    if (testClasses.isEmpty()) {
+        Log.error("No test classes found");
+        System.exit(2);
+    }
+
+    var results = executeTests(testClasses, config.verbose());
+    reportResults(results);
 }
 
 Config parseArgs(String[] args) {
-    var junitVersion = DEFAULT_JUNIT_VERSION;
     String classpath = null;
     var verbose = false;
-    var junitArgs = new ArrayList<String>();
-    var passthrough = false;
 
-    for (int i = 0; i < args.length; i++) {
-        var arg = args[i];
-        if (passthrough) {
-            junitArgs.add(arg);
-            continue;
-        }
-        if ("--".equals(arg)) {
-            passthrough = true;
-            continue;
-        }
+    for (var arg : args) {
         switch (Arg.from(arg)) {
             case HELP -> printUsage();
-            case VERSION -> junitVersion = extractValue(arg);
             case CP -> classpath = extractValue(arg);
             case VERBOSE -> verbose = true;
             case null -> {
                 if (arg.startsWith("-")) Log.stop("Unknown option: " + arg);
-                junitArgs.add(arg);
+                Log.stop("Unknown argument: " + arg);
             }
         }
     }
-    return new Config(junitVersion, classpath, verbose, List.copyOf(junitArgs));
+    return new Config(classpath, verbose);
 }
 
 String extractValue(String arg) {
@@ -175,49 +170,10 @@ String extractValue(String arg) {
     return arg.substring(idx + 1);
 }
 
-Path resolveJar(String junitVersion, boolean verbose) {
-    var jarName = "junit-platform-console-standalone-%s.jar".formatted(junitVersion);
-    var jarPath = CACHE_DIR.resolve(jarName);
-
-    if (Files.exists(jarPath)) {
-        if (verbose) Log.debug("Using cached: " + jarPath);
-        return jarPath;
-    }
-
-    var url = MAVEN_URL.formatted(junitVersion, junitVersion);
-    Log.info("Downloading JUnit %s ...".formatted(junitVersion));
-    if (verbose) Log.debug("URL: " + url);
-
-    try {
-        Files.createDirectories(CACHE_DIR);
-        var client = HttpClient.newHttpClient();
-        var request = HttpRequest.newBuilder(URI.create(url)).GET().build();
-        var response = client.send(request, HttpResponse.BodyHandlers.ofFile(jarPath));
-
-        if (response.statusCode() != 200) {
-            Files.deleteIfExists(jarPath);
-            Log.stop("Download failed: HTTP " + response.statusCode());
-        }
-
-        Log.info("Cached: " + jarPath);
-        return jarPath;
-    } catch (IOException | InterruptedException e) {
-        try { Files.deleteIfExists(jarPath); } catch (IOException ignored) {}
-        Log.stop("Download failed: " + e.getMessage());
-        return null;
-    }
-}
-
-String resolveClasspath(Path jar, String explicitCp, boolean verbose) {
-    var entries = new ArrayList<String>();
-    entries.add(jar.toString());
-
-    if (explicitCp != null) {
-        entries.add(explicitCp);
-    } else {
-        var detected = detectClasspath();
-        entries.addAll(detected);
-    }
+String resolveClasspath(String explicitCp, boolean verbose) {
+    var entries = explicitCp != null
+        ? List.of(explicitCp.split(File.pathSeparator))
+        : detectClasspath();
 
     var cp = String.join(File.pathSeparator, entries);
     if (verbose) Log.debug("Classpath: " + cp);
@@ -245,47 +201,154 @@ List<String> detectClasspath() {
     return entries;
 }
 
-void runTests(Path jar, String classpath, List<String> extraArgs, boolean verbose) {
-    var command = new ArrayList<String>();
-    command.add("java");
-    command.add("-jar");
-    command.add(jar.toString());
-    command.add("execute");
-    command.add("--class-path");
-    command.add(classpath);
-    command.add("--scan-classpath");
-    command.add("--details=tree");
-    command.addAll(extraArgs);
+List<Class<?>> discoverTests(String classpath, boolean verbose) {
+    var dirs = Stream.of(classpath.split(File.pathSeparator))
+        .map(Path::of)
+        .filter(Files::isDirectory)
+        .toList();
 
-    if (verbose) Log.debug("Command: " + String.join(" ", command));
+    var urls = dirs.stream()
+        .map(d -> {
+            try { return d.toUri().toURL(); }
+            catch (Exception e) { return null; }
+        })
+        .filter(u -> u != null)
+        .toArray(URL[]::new);
 
-    try {
-        var process = new ProcessBuilder(command)
-            .inheritIO()
-            .start();
-        System.exit(process.waitFor());
-    } catch (IOException | InterruptedException e) {
-        Log.stop("Failed to run tests: " + e.getMessage());
+    var loader = new URLClassLoader(urls, Thread.currentThread().getContextClassLoader());
+    var testClasses = new ArrayList<Class<?>>();
+
+    for (var dir : dirs) {
+        try (var paths = Files.walk(dir)) {
+            paths.filter(p -> p.toString().endsWith(".class"))
+                .forEach(p -> {
+                    var relative = dir.relativize(p).toString();
+                    var className = relative
+                        .replace(File.separatorChar, '.')
+                        .replaceAll("\\.class$", "");
+
+                    if (!className.endsWith("Test")) return;
+
+                    try {
+                        var clazz = loader.loadClass(className);
+                        if (!Modifier.isAbstract(clazz.getModifiers())
+                            && hasPublicNoArgConstructor(clazz)) {
+                            testClasses.add(clazz);
+                            if (verbose) Log.debug("Found: " + className);
+                        }
+                    } catch (Throwable e) {
+                        if (verbose) Log.debug("Skip: " + className + " (" + e.getMessage() + ")");
+                    }
+                });
+        } catch (IOException e) {
+            Log.error("Failed to scan: " + dir + " (" + e.getMessage() + ")");
+        }
     }
+
+    return testClasses;
+}
+
+boolean hasPublicNoArgConstructor(Class<?> clazz) {
+    try {
+        clazz.getDeclaredConstructor();
+        return Modifier.isPublic(clazz.getModifiers());
+    } catch (NoSuchMethodException e) {
+        return false;
+    }
+}
+
+List<Method> testMethods(Class<?> clazz) {
+    return Stream.of(clazz.getDeclaredMethods())
+        .filter(m -> Modifier.isPublic(m.getModifiers()))
+        .filter(m -> !Modifier.isStatic(m.getModifiers()))
+        .filter(m -> m.getParameterCount() == 0)
+        .filter(m -> m.getReturnType() == void.class)
+        .filter(m -> !EXCLUDED_METHODS.contains(m.getName()))
+        .toList();
+}
+
+List<TestResult> executeTests(List<Class<?>> testClasses, boolean verbose) {
+    var results = new ArrayList<TestResult>();
+
+    for (var clazz : testClasses) {
+        var methods = testMethods(clazz);
+        if (methods.isEmpty()) continue;
+
+        Log.info(clazz.getSimpleName());
+        var setUp = findLifecycleMethod(clazz, "setUp");
+        var tearDown = findLifecycleMethod(clazz, "tearDown");
+
+        for (var method : methods) {
+            var result = executeTest(clazz, method, setUp, tearDown);
+            results.add(result);
+            printResult(result);
+        }
+    }
+    return results;
+}
+
+TestResult executeTest(Class<?> clazz, Method method, Method setUp, Method tearDown) {
+    try {
+        var instance = clazz.getDeclaredConstructor().newInstance();
+        if (setUp != null) setUp.invoke(instance);
+        method.invoke(instance);
+        if (tearDown != null) tearDown.invoke(instance);
+        return new TestResult(clazz.getName(), method.getName(), true, null);
+    } catch (Throwable e) {
+        var cause = e.getCause() != null ? e.getCause() : e;
+        return new TestResult(clazz.getName(), method.getName(), false, cause.toString());
+    }
+}
+
+Method findLifecycleMethod(Class<?> clazz, String name) {
+    try {
+        var m = clazz.getDeclaredMethod(name);
+        return Modifier.isPublic(m.getModifiers()) ? m : null;
+    } catch (NoSuchMethodException e) {
+        return null;
+    }
+}
+
+void printResult(TestResult result) {
+    if (result.passed()) {
+        Log.info("  ✓ " + result.methodName());
+    } else {
+        Log.error("  ✗ " + result.methodName() + " — " + result.message());
+    }
+}
+
+void reportResults(List<TestResult> results) {
+    var passed = results.stream().filter(TestResult::passed).count();
+    var failed = results.size() - passed;
+
+    System.out.println();
+    if (failed == 0) {
+        Log.info("%d tests passed".formatted(results.size()));
+    } else {
+        Log.error("%d of %d tests failed".formatted(failed, results.size()));
+    }
+    System.exit(failed > 0 ? 1 : 0);
 }
 
 void printUsage() {
     IO.println("""
-        zunit - Zero-dependency JUnit test runner
+        zunit - Zero-dependency test runner
 
-        Usage: zunit [options] [-- junit-args...]
+        Usage: zunit [options]
 
         Options:
         %s
 
-        Everything after -- is passed to JUnit Console Launcher.
+        Test convention:
+          - Test classes: name ends with "Test", public no-arg constructor
+          - Test methods: public void, zero arguments
+          - Lifecycle: setUp() before each, tearDown() after (optional)
+          - Failure: any thrown exception marks the test as failed
 
         Examples:
           zunit                               Auto-detect and run all tests
           zunit -cp:target/test-classes       Explicit classpath
-          zunit -version:1.11.2               Use specific JUnit version
-          zunit -- --include-tag=fast         Filter by tag
-          zunit -- --fail-if-no-tests         Fail if no tests found
+          zunit -verbose                      Show debug output
         """.formatted(Arg.usage()));
     System.exit(0);
 }
