@@ -1,13 +1,22 @@
 # zunit
 
-Zero-dependency, single-file Java test runner. Discovers test classes on the classpath and executes all public void methods via reflection. No JUnit required, no downloads, no build tool — just run zunit and go.
+Zero-dependency, single-file Java test runner. Discovers `*Test.java` source files and runs each directly via `java --source 25`. No compilation step, no JUnit, no build tool required — just run zunit and go.
 
 ## Test Convention
 
-- **Test classes**: name ends with `Test`, public no-arg constructor
-- **Test methods**: `public void`, zero arguments
-- **Lifecycle**: `setUp()` called before each test, `tearDown()` after (optional)
-- **Failure**: any thrown exception marks the test as failed
+- **Test files**: name ends with `Test.java`
+- Each file is a self-contained Java source script with `void main()`
+- Failure: any thrown exception or non-zero exit = failed
+
+Example test:
+
+```java
+void main() {
+    var greeting = Greeter.greet("World");
+    if (!"Hello, World!".equals(greeting))
+        throw new AssertionError("expected 'Hello, World!' but got: " + greeting);
+}
+```
 
 ## Usage
 
@@ -20,24 +29,39 @@ zunit [options]
 | Option | Description |
 |---|---|
 | `-help` | Show help |
-| `-cp:<path>` | Override classpath (colon-separated) |
+| `-cp:<path>` | Override classpath for main classes |
+| `-tp:<path>` | Override test source path |
 | `-verbose` | Show debug info |
+
+### Test Source Auto-Detection
+
+1. `src/test/java/` — Maven layout
+2. `test/` — simple layout
+3. `.` — fallback
 
 ### Classpath Auto-Detection
 
-zunit detects your project layout automatically (in order):
-
-1. `target/test-classes` + `target/classes` — Maven
-2. `classes/` — simple layout
-3. `.` — fallback
+1. `zbo/app.jar` — zb output
+2. `target/classes` — Maven output
+3. `classes/` — simple layout
+4. `.` — fallback
 
 ### Examples
 
 ```bash
 zunit                                # auto-detect and run all tests
-zunit -cp:target/test-classes        # explicit classpath
+zunit -cp:zbo/app.jar               # explicit classpath
+zunit -tp:test/                      # explicit test source path
 zunit -verbose                       # show debug output
 ```
+
+## zb Integration
+
+```bash
+zb && zunit
+```
+
+zunit auto-detects `zbo/app.jar` and test files in `test/`.
 
 ## References
 
