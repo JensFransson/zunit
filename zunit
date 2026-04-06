@@ -234,41 +234,46 @@ Path detectTestPath() {
     return Path.of(".");
 }
 
-List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose) {
-    var results = new ArrayList<TestResult>();
+record RunningTest(String fileName, Process process) {}
 
+List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose) {
+    // Start all test processes concurrently
+    var running = new ArrayList<RunningTest>();
     for (var testFile : testFiles) {
-        var result = runTest(testFile, classpath, verbose);
+        var command = List.of("java", "--source", "25", "--class-path", classpath, testFile.toString());
+        if (verbose) Log.debug("Command: " + String.join(" ", command));
+
+        try {
+            var process = new ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start();
+            var fileName = testFile.getFileName().toString().replace(".java", "");
+            running.add(new RunningTest(fileName, process));
+        } catch (IOException e) {
+            var fileName = testFile.getFileName().toString().replace(".java", "");
+            running.add(new RunningTest(fileName, null));
+        }
+    }
+
+    // Collect results
+    var results = new ArrayList<TestResult>();
+    for (var test : running) {
+        var result = collectResult(test);
         results.add(result);
         printResult(result);
     }
     return results;
 }
 
-TestResult runTest(Path testFile, String classpath, boolean verbose) {
-    var command = new ArrayList<String>();
-    command.add("java");
-    command.add("--source");
-    command.add("25");
-    command.add("--class-path");
-    command.add(classpath);
-    command.add(testFile.toString());
-
-    if (verbose) Log.debug("Command: " + String.join(" ", command));
-
+TestResult collectResult(RunningTest test) {
+    if (test.process() == null)
+        return new TestResult(test.fileName(), false, "Failed to start");
     try {
-        var process = new ProcessBuilder(command)
-            .redirectErrorStream(true)
-            .start();
-
-        var output = new String(process.getInputStream().readAllBytes());
-        var exitCode = process.waitFor();
-        var fileName = testFile.getFileName().toString().replace(".java", "");
-
-        return new TestResult(fileName, exitCode == 0, output.strip());
+        var output = new String(test.process().getInputStream().readAllBytes());
+        var exitCode = test.process().waitFor();
+        return new TestResult(test.fileName(), exitCode == 0, output.strip());
     } catch (IOException | InterruptedException e) {
-        var fileName = testFile.getFileName().toString().replace(".java", "");
-        return new TestResult(fileName, false, e.getMessage());
+        return new TestResult(test.fileName(), false, e.getMessage());
     }
 }
 
