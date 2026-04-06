@@ -3,35 +3,35 @@
 /**
  * zunit - Minimal, zero-dependency test runner for Java.
  *
- * Discovers test classes on the classpath and executes all public
- * void zero-arg methods via reflection. No JUnit required.
+ * Discovers *Test.java source files and runs each directly via
+ * java --source 25. No compilation step, no JUnit, no dependencies.
  *
  * Test convention:
- *   - Test classes: name ends with "Test", public no-arg constructor
- *   - Test methods: public void, zero arguments
- *   - Lifecycle: setUp() before each test, tearDown() after (optional)
- *   - Failure: any thrown exception marks the test as failed
+ *   - Test files: name ends with "Test.java"
+ *   - Each test file is a self-contained Java source script
+ *   - Must have a void main() (implicit in Java 25)
+ *   - Failure: any thrown exception or non-zero exit = failed
+ *
+ * Test source auto-detection (in order):
+ *   src/test/java/                        (Maven)
+ *   test/                                 (simple)
+ *   .                                     (fallback)
  *
  * Classpath auto-detection (in order):
- *   target/test-classes + target/classes  (Maven)
+ *   zbo/app.jar                           (zb)
+ *   target/classes                        (Maven)
  *   classes/                              (simple)
  *   .                                     (fallback)
  *
  * Examples:
  *   zunit                                 # auto-detect and run
- *   zunit -cp:target/test-classes         # explicit classpath
+ *   zunit -cp:target/classes              # explicit classpath
+ *   zunit -tp:test/                       # explicit test path
  *
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.net.URL;
-import java.net.URLClassLoader;
-
-String version = "2026-04-06.1";
-
-static final Set<String> EXCLUDED_METHODS = Set.of("setUp", "tearDown", "main");
+String version = "2026-04-06.2";
 
 enum Log {
 
@@ -87,7 +87,8 @@ enum Log {
 
 enum Arg {
     HELP("-help", "Show this help"),
-    CP("-cp", "Override classpath (colon-separated)"),
+    CP("-cp", "Override classpath for main classes"),
+    TP("-tp", "Override test source path"),
     VERBOSE("-verbose", "Show debug info");
 
     final String option;
@@ -115,6 +116,7 @@ enum Arg {
             .map(a -> {
                 var label = switch (a) {
                     case CP -> a.option + ":<path>";
+                    case TP -> a.option + ":<path>";
                     default -> a.option;
                 };
                 return "  %-20s %s".formatted(label, a.description);
@@ -123,9 +125,9 @@ enum Arg {
     }
 }
 
-record Config(String classpath, boolean verbose) {}
+record Config(String classpath, String testPath, boolean verbose) {}
 
-record TestResult(String className, String methodName, boolean passed, String message) {}
+record TestResult(String fileName, boolean passed, String output) {}
 
 void main(String... args) {
     var config = parseArgs(args);
@@ -133,25 +135,27 @@ void main(String... args) {
     Log.info("zunit " + version);
 
     var classpath = resolveClasspath(config.classpath(), config.verbose());
-    var testClasses = discoverTests(classpath, config.verbose());
+    var testFiles = discoverTests(config.testPath(), config.verbose());
 
-    if (testClasses.isEmpty()) {
-        Log.error("No test classes found");
+    if (testFiles.isEmpty()) {
+        Log.error("No test files found");
         System.exit(2);
     }
 
-    var results = executeTests(testClasses, config.verbose());
+    var results = runTests(testFiles, classpath, config.verbose());
     reportResults(results);
 }
 
 Config parseArgs(String[] args) {
     String classpath = null;
+    String testPath = null;
     var verbose = false;
 
     for (var arg : args) {
         switch (Arg.from(arg)) {
             case HELP -> printUsage();
             case CP -> classpath = extractValue(arg);
+            case TP -> testPath = extractValue(arg);
             case VERBOSE -> verbose = true;
             case null -> {
                 if (arg.startsWith("-")) Log.stop("Unknown option: " + arg);
@@ -159,7 +163,7 @@ Config parseArgs(String[] args) {
             }
         }
     }
-    return new Config(classpath, verbose);
+    return new Config(classpath, testPath, verbose);
 }
 
 String extractValue(String arg) {
@@ -171,149 +175,112 @@ String extractValue(String arg) {
 }
 
 String resolveClasspath(String explicitCp, boolean verbose) {
-    var entries = explicitCp != null
-        ? List.of(explicitCp.split(File.pathSeparator))
-        : detectClasspath();
-
-    var cp = String.join(File.pathSeparator, entries);
+    var cp = explicitCp != null ? explicitCp : detectClasspath();
     if (verbose) Log.debug("Classpath: " + cp);
     return cp;
 }
 
-List<String> detectClasspath() {
-    var entries = new ArrayList<String>();
+String detectClasspath() {
+    // zb output
+    var zbJar = Path.of("zbo", "app.jar");
+    if (Files.exists(zbJar)) return zbJar.toString();
 
     // Maven layout
-    if (Files.isDirectory(Path.of("target", "test-classes"))) {
-        entries.add("target/test-classes");
-        if (Files.isDirectory(Path.of("target", "classes")))
-            entries.add("target/classes");
-        return entries;
-    }
+    if (Files.isDirectory(Path.of("target", "classes")))
+        return "target/classes";
+
     // Simple layout
-    if (Files.isDirectory(Path.of("classes"))) {
-        entries.add("classes");
-        return entries;
+    if (Files.isDirectory(Path.of("classes")))
+        return "classes";
+
+    return ".";
+}
+
+List<Path> discoverTests(String explicitPath, boolean verbose) {
+    var searchDir = explicitPath != null
+        ? Path.of(explicitPath)
+        : detectTestPath();
+
+    if (verbose) Log.debug("Test path: " + searchDir);
+
+    if (!Files.isDirectory(searchDir)) {
+        Log.error("Test path not found: " + searchDir);
+        return List.of();
     }
+
+    try (var paths = Files.walk(searchDir)) {
+        var tests = paths
+            .filter(p -> p.getFileName().toString().endsWith("Test.java"))
+            .sorted()
+            .toList();
+        if (verbose) tests.forEach(t -> Log.debug("Found: " + t));
+        return tests;
+    } catch (IOException e) {
+        Log.error("Failed to scan: " + searchDir + " (" + e.getMessage() + ")");
+        return List.of();
+    }
+}
+
+Path detectTestPath() {
+    // Maven layout
+    var maven = Path.of("src", "test", "java");
+    if (Files.isDirectory(maven)) return maven;
+
+    // Simple layout
+    var simple = Path.of("test");
+    if (Files.isDirectory(simple)) return simple;
 
     // Fallback
-    entries.add(".");
-    return entries;
+    return Path.of(".");
 }
 
-List<Class<?>> discoverTests(String classpath, boolean verbose) {
-    var dirs = Stream.of(classpath.split(File.pathSeparator))
-        .map(Path::of)
-        .filter(Files::isDirectory)
-        .toList();
-
-    var urls = dirs.stream()
-        .map(d -> {
-            try { return d.toUri().toURL(); }
-            catch (Exception e) { return null; }
-        })
-        .filter(u -> u != null)
-        .toArray(URL[]::new);
-
-    var loader = new URLClassLoader(urls, Thread.currentThread().getContextClassLoader());
-    var testClasses = new ArrayList<Class<?>>();
-
-    for (var dir : dirs) {
-        try (var paths = Files.walk(dir)) {
-            paths.filter(p -> p.toString().endsWith(".class"))
-                .forEach(p -> {
-                    var relative = dir.relativize(p).toString();
-                    var className = relative
-                        .replace(File.separatorChar, '.')
-                        .replaceAll("\\.class$", "");
-
-                    if (!className.endsWith("Test")) return;
-
-                    try {
-                        var clazz = loader.loadClass(className);
-                        if (!Modifier.isAbstract(clazz.getModifiers())
-                            && hasPublicNoArgConstructor(clazz)) {
-                            testClasses.add(clazz);
-                            if (verbose) Log.debug("Found: " + className);
-                        }
-                    } catch (Throwable e) {
-                        if (verbose) Log.debug("Skip: " + className + " (" + e.getMessage() + ")");
-                    }
-                });
-        } catch (IOException e) {
-            Log.error("Failed to scan: " + dir + " (" + e.getMessage() + ")");
-        }
-    }
-
-    return testClasses;
-}
-
-boolean hasPublicNoArgConstructor(Class<?> clazz) {
-    try {
-        clazz.getDeclaredConstructor();
-        return Modifier.isPublic(clazz.getModifiers());
-    } catch (NoSuchMethodException e) {
-        return false;
-    }
-}
-
-List<Method> testMethods(Class<?> clazz) {
-    return Stream.of(clazz.getDeclaredMethods())
-        .filter(m -> Modifier.isPublic(m.getModifiers()))
-        .filter(m -> !Modifier.isStatic(m.getModifiers()))
-        .filter(m -> m.getParameterCount() == 0)
-        .filter(m -> m.getReturnType() == void.class)
-        .filter(m -> !EXCLUDED_METHODS.contains(m.getName()))
-        .toList();
-}
-
-List<TestResult> executeTests(List<Class<?>> testClasses, boolean verbose) {
+List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose) {
     var results = new ArrayList<TestResult>();
 
-    for (var clazz : testClasses) {
-        var methods = testMethods(clazz);
-        if (methods.isEmpty()) continue;
-
-        Log.info(clazz.getSimpleName());
-        var setUp = findLifecycleMethod(clazz, "setUp");
-        var tearDown = findLifecycleMethod(clazz, "tearDown");
-
-        for (var method : methods) {
-            var result = executeTest(clazz, method, setUp, tearDown);
-            results.add(result);
-            printResult(result);
-        }
+    for (var testFile : testFiles) {
+        var result = runTest(testFile, classpath, verbose);
+        results.add(result);
+        printResult(result);
     }
     return results;
 }
 
-TestResult executeTest(Class<?> clazz, Method method, Method setUp, Method tearDown) {
-    try {
-        var instance = clazz.getDeclaredConstructor().newInstance();
-        if (setUp != null) setUp.invoke(instance);
-        method.invoke(instance);
-        if (tearDown != null) tearDown.invoke(instance);
-        return new TestResult(clazz.getName(), method.getName(), true, null);
-    } catch (Throwable e) {
-        var cause = e.getCause() != null ? e.getCause() : e;
-        return new TestResult(clazz.getName(), method.getName(), false, cause.toString());
-    }
-}
+TestResult runTest(Path testFile, String classpath, boolean verbose) {
+    var command = new ArrayList<String>();
+    command.add("java");
+    command.add("--source");
+    command.add("25");
+    command.add("--class-path");
+    command.add(classpath);
+    command.add(testFile.toString());
 
-Method findLifecycleMethod(Class<?> clazz, String name) {
+    if (verbose) Log.debug("Command: " + String.join(" ", command));
+
     try {
-        var m = clazz.getDeclaredMethod(name);
-        return Modifier.isPublic(m.getModifiers()) ? m : null;
-    } catch (NoSuchMethodException e) {
-        return null;
+        var process = new ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .start();
+
+        var output = new String(process.getInputStream().readAllBytes());
+        var exitCode = process.waitFor();
+        var fileName = testFile.getFileName().toString().replace(".java", "");
+
+        return new TestResult(fileName, exitCode == 0, output.strip());
+    } catch (IOException | InterruptedException e) {
+        var fileName = testFile.getFileName().toString().replace(".java", "");
+        return new TestResult(fileName, false, e.getMessage());
     }
 }
 
 void printResult(TestResult result) {
     if (result.passed()) {
-        Log.info("  ✓ " + result.methodName());
+        Log.info("  ✓ " + result.fileName());
     } else {
-        Log.error("  ✗ " + result.methodName() + " — " + result.message());
+        Log.error("  ✗ " + result.fileName());
+        if (!result.output().isEmpty()) {
+            result.output().lines().forEach(line ->
+                Log.error("    " + line));
+        }
     }
 }
 
@@ -340,14 +307,25 @@ void printUsage() {
         %s
 
         Test convention:
-          - Test classes: name ends with "Test", public no-arg constructor
-          - Test methods: public void, zero arguments
-          - Lifecycle: setUp() before each, tearDown() after (optional)
-          - Failure: any thrown exception marks the test as failed
+          - Test files: *Test.java source files
+          - Each file is a self-contained Java script with void main()
+          - Failure: any thrown exception or non-zero exit = failed
+
+        Test source auto-detection:
+          src/test/java/     Maven layout
+          test/              Simple layout
+          .                  Fallback
+
+        Classpath auto-detection:
+          zbo/app.jar        zb output
+          target/classes     Maven output
+          classes/           Simple layout
+          .                  Fallback
 
         Examples:
           zunit                               Auto-detect and run all tests
-          zunit -cp:target/test-classes       Explicit classpath
+          zunit -cp:zbo/app.jar               Explicit classpath
+          zunit -tp:test/                     Explicit test source path
           zunit -verbose                      Show debug output
         """.formatted(Arg.usage()));
     System.exit(0);
