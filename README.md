@@ -2,6 +2,8 @@
 
 Zero-dependency, single-file Java test runner. Discovers `*Test.java` source files and runs each directly via `java --source 25`. No compilation step, no JUnit, no build tool required — just run zunit and go.
 
+![zunit](zunit.png)
+
 ## Test Convention
 
 - **Test files**: name ends with `Test.java`
