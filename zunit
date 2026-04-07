@@ -240,7 +240,7 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
     // Start all test processes concurrently
     var running = new ArrayList<RunningTest>();
     for (var testFile : testFiles) {
-        var command = List.of("java", "--source", "25", "--class-path", classpath, testFile.toString());
+        var command = List.of("java", "-ea", "--source", "25", "--class-path", classpath, testFile.toString());
         if (verbose) Log.debug("Command: " + String.join(" ", command));
 
         try {
