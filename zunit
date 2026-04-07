@@ -18,7 +18,8 @@
  *   .                                     (fallback)
  *
  * Classpath auto-detection (in order):
- *   zbo/app.jar                           (zb)
+ *   .zb config (jar.dir + jar.file.name)  (zb config)
+ *   zbo/app.jar                           (zb default)
  *   target/classes                        (Maven)
  *   classes/                              (simple)
  *   .                                     (fallback)
@@ -31,7 +32,7 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-06.2";
+String version = "2026-04-07.1";
 
 enum Log {
 
@@ -127,6 +128,38 @@ enum Arg {
 
 record Config(String classpath, String testPath, boolean verbose) {}
 
+record ZbConfig(String jarDir, String jarFileName) {
+    static final Path ZB_FILE = Path.of(".zb");
+    static final String DISCOVERED = "<discovered by zb>";
+    static final String TEMP_DIR = "<temp.dir>";
+
+    String jarPath() {
+        return Path.of(jarDir, jarFileName).toString();
+    }
+
+    static ZbConfig load() {
+        if (!Files.exists(ZB_FILE)) return null;
+        var properties = new Properties();
+        try (var reader = new java.io.FileReader(ZB_FILE.toFile())) {
+            properties.load(reader);
+            var jarDir = resolve(properties, "jar.dir");
+            var jarFileName = resolve(properties, "jar.file.name");
+            if (jarDir != null && jarFileName != null)
+                return new ZbConfig(jarDir, jarFileName);
+        } catch (IOException e) {
+            // ignore, fall through to auto-detection
+        }
+        return null;
+    }
+
+    static String resolve(Properties properties, String key) {
+        var value = properties.getProperty(key);
+        if (value == null || value.equals(DISCOVERED) || value.equals(TEMP_DIR))
+            return null;
+        return value;
+    }
+}
+
 record TestResult(String fileName, boolean passed, String output) {}
 
 void main(String... args) {
@@ -181,7 +214,14 @@ String resolveClasspath(String explicitCp, boolean verbose) {
 }
 
 String detectClasspath() {
-    // zb output
+    // zb configuration file
+    var zbConfig = ZbConfig.load();
+    if (zbConfig != null) {
+        var jarPath = Path.of(zbConfig.jarPath());
+        if (Files.exists(jarPath)) return jarPath.toString();
+    }
+
+    // zb output (default)
     var zbJar = Path.of("zbo", "app.jar");
     if (Files.exists(zbJar)) return zbJar.toString();
 
@@ -322,7 +362,8 @@ void printUsage() {
           .                  Fallback
 
         Classpath auto-detection:
-          zbo/app.jar        zb output
+          .zb config         zb configuration (jar.dir + jar.file.name)
+          zbo/app.jar        zb default
           target/classes     Maven output
           classes/           Simple layout
           .                  Fallback

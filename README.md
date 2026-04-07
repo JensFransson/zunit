@@ -41,10 +41,11 @@ zunit [options]
 
 ### Classpath Auto-Detection
 
-1. `zbo/app.jar` — zb output
-2. `target/classes` — Maven output
-3. `classes/` — simple layout
-4. `.` — fallback
+1. `.zb` config (`jar.dir` + `jar.file.name`) — zb configuration
+2. `zbo/app.jar` — zb default
+3. `target/classes` — Maven output
+4. `classes/` — simple layout
+5. `.` — fallback
 
 ### Examples
 
@@ -61,7 +62,7 @@ zunit -verbose                       # show debug output
 zb && zunit
 ```
 
-zunit auto-detects `zbo/app.jar` and test files in `test/`.
+zunit reads the `.zb` configuration file (if present) to resolve the JAR path from `jar.dir` and `jar.file.name`. Falls back to `zbo/app.jar` if `.zb` is absent.
 
 ## References
 
