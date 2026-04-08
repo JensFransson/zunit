@@ -32,7 +32,7 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-07.1";
+String version = "2026-04-08.1";
 
 enum Log {
 
@@ -276,6 +276,27 @@ Path detectTestPath() {
 
 record RunningTest(String fileName, Process process) {}
 
+static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+static final String SPINNER_COLOR = "\033[38;5;220m";
+static final String SPINNER_RESET = "\u001B[0m";
+
+Thread startSpinner(String label) {
+    return Thread.startVirtualThread(() -> {
+        var i = 0;
+        while (!Thread.currentThread().isInterrupted()) {
+            var frame = SPINNER_FRAMES[i++ % SPINNER_FRAMES.length];
+            IO.print("\r" + SPINNER_COLOR + "  " + frame + " " + label + SPINNER_RESET);
+            try { Thread.sleep(80); } catch (InterruptedException e) { break; }
+        }
+        IO.print("\r" + " ".repeat(label.length() + 6) + "\r");
+    });
+}
+
+void stopSpinner(Thread spinner) {
+    spinner.interrupt();
+    try { spinner.join(); } catch (InterruptedException e) {}
+}
+
 List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose) {
     // Start all test processes concurrently
     var running = new ArrayList<RunningTest>();
@@ -295,10 +316,12 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
         }
     }
 
-    // Collect results
+    // Collect results with spinner feedback
     var results = new ArrayList<TestResult>();
     for (var test : running) {
+        var spinner = startSpinner(test.fileName());
         var result = collectResult(test);
+        stopSpinner(spinner);
         results.add(result);
         printResult(result);
     }
