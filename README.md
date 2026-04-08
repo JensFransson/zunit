@@ -13,10 +13,11 @@ Zero-dependency, single-file Java test runner. Discovers `*Test.java` source fil
 Example test:
 
 ```java
+import java.util.Objects;
+
 void main() {
     var greeting = Greeter.greet("World");
-    if (!"Hello, World!".equals(greeting))
-        throw new AssertionError("expected 'Hello, World!' but got: " + greeting);
+    assert Objects.equals("Hello, World!", greeting) : "expected 'Hello, World!' but got: " + greeting;
 }
 ```
 
