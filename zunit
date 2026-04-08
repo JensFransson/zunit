@@ -32,13 +32,14 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-08.2";
+String version = "2026-04-08.3";
 
 enum Log {
 
     ERROR(Color.BRIGHT_RED, System.err),
     INFO(Color.BRIGHT_GREEN, System.out),
     WARNING(Color.WARM_YELLOW, System.out),
+    PROGRESS(Color.WARM_YELLOW, System.out),
     DEBUG(Color.SOFT_PURPLE, System.out);
 
     PrintStream out;
@@ -78,6 +79,10 @@ enum Log {
 
     static void error(String message) {
         ERROR.out(message);
+    }
+
+    static void progress(String message) {
+        PROGRESS.out.print(PROGRESS.value.formatted(message));
     }
 
     static void stop(String message) {
@@ -277,18 +282,16 @@ Path detectTestPath() {
 record RunningTest(String fileName, Process process) {}
 
 static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-static final String SPINNER_COLOR = "\033[38;5;220m";
-static final String SPINNER_RESET = "\u001B[0m";
 
 Thread startSpinner(String label) {
     return Thread.startVirtualThread(() -> {
         var i = 0;
         while (!Thread.currentThread().isInterrupted()) {
             var frame = SPINNER_FRAMES[i++ % SPINNER_FRAMES.length];
-            IO.print("\r" + SPINNER_COLOR + "  " + frame + " " + label + SPINNER_RESET);
+            Log.progress("\r  " + frame + " " + label);
             try { Thread.sleep(80); } catch (InterruptedException e) { break; }
         }
-        IO.print("\r" + " ".repeat(label.length() + 6) + "\r");
+        Log.progress("\r" + " ".repeat(label.length() + 6) + "\r");
     });
 }
 
