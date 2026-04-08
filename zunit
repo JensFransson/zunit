@@ -32,7 +32,7 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-08.3";
+String version = "2026-04-08.4";
 
 enum Log {
 
@@ -213,32 +213,38 @@ String extractValue(String arg) {
 }
 
 String resolveClasspath(String explicitCp, boolean verbose) {
-    var cp = explicitCp != null ? explicitCp : detectClasspath();
+    var cp = explicitCp != null ? explicitCp : Classpath.detect();
     if (verbose) Log.debug("Classpath: " + cp);
     return cp;
 }
 
-String detectClasspath() {
-    // zb configuration file
-    var zbConfig = ZbConfig.load();
-    if (zbConfig != null) {
-        var jarPath = Path.of(zbConfig.jarPath());
-        if (Files.exists(jarPath)) return jarPath.toString();
+enum Classpath {
+    ZB_OUTPUT("zbo/app.jar"),
+    MAVEN("target/classes"),
+    SIMPLE("classes"),
+    FALLBACK(".");
+
+    final Path path;
+
+    Classpath(String path) {
+        this.path = Path.of(path);
     }
 
-    // zb output (default)
-    var zbJar = Path.of("zbo", "app.jar");
-    if (Files.exists(zbJar)) return zbJar.toString();
+    static String detect() {
+        // .zb config takes priority — dynamic path from jar.dir + jar.file.name
+        var zbConfig = ZbConfig.load();
+        if (zbConfig != null) {
+            var jarPath = Path.of(zbConfig.jarPath());
+            if (Files.exists(jarPath)) return jarPath.toString();
+        }
 
-    // Maven layout
-    if (Files.isDirectory(Path.of("target", "classes")))
-        return "target/classes";
-
-    // Simple layout
-    if (Files.isDirectory(Path.of("classes")))
-        return "classes";
-
-    return ".";
+        return Stream.of(values())
+            .map(cp -> cp.path)
+            .filter(p -> Files.exists(p))
+            .findFirst()
+            .orElse(FALLBACK.path)
+            .toString();
+    }
 }
 
 List<Path> discoverTests(String explicitPath, boolean verbose) {
