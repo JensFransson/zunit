@@ -32,7 +32,7 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-08.1";
+String version = "2026-04-08.2";
 
 enum Log {
 
@@ -315,6 +315,10 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
             running.add(new RunningTest(fileName, null));
         }
     }
+
+    // Show launched tests
+    running.forEach(test -> Log.info("  ⧖ " + test.fileName()));
+    System.out.println();
 
     // Collect results with spinner feedback
     var results = new ArrayList<TestResult>();
