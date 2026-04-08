@@ -66,6 +66,10 @@ zb && zunit
 
 zunit reads the `.zb` configuration file (if present) to resolve the JAR path from `jar.dir` and `jar.file.name`. Falls back to `zbo/app.jar` if `.zb` is absent.
 
+## AI Skill
+
+A [zunit skill](https://github.com/AdamBien/airails/tree/main/java/zunit) is available for AI-assisted generation and execution of zunit tests.
+
 ## References
 
 - [bce.design](https://bce.design) — Boundary-Control-Entity architecture
