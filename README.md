@@ -72,3 +72,4 @@ zunit reads the `.zb` configuration file (if present) to resolve the JAR path fr
 - [zcl](https://github.com/AdamBien/zcl) — Zero-dependency Colour Logger
 - [zcfg](https://github.com/AdamBien/zcfg) — Zero-dependency Configuration Utility
 - [zb](https://github.com/AdamBien/zb) — Zero-dependency Builder
+- [airails.dev](https://airails.dev) — AI-powered Development
