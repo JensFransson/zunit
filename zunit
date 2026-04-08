@@ -244,7 +244,7 @@ String detectClasspath() {
 List<Path> discoverTests(String explicitPath, boolean verbose) {
     var searchDir = explicitPath != null
         ? Path.of(explicitPath)
-        : detectTestPath();
+        : TestPath.detect();
 
     if (verbose) Log.debug("Test path: " + searchDir);
 
@@ -266,17 +266,24 @@ List<Path> discoverTests(String explicitPath, boolean verbose) {
     }
 }
 
-Path detectTestPath() {
-    // Maven layout
-    var maven = Path.of("src", "test", "java");
-    if (Files.isDirectory(maven)) return maven;
+enum TestPath {
+    MAVEN("src/test/java"),
+    SIMPLE("test"),
+    FALLBACK(".");
 
-    // Simple layout
-    var simple = Path.of("test");
-    if (Files.isDirectory(simple)) return simple;
+    final Path path;
 
-    // Fallback
-    return Path.of(".");
+    TestPath(String path) {
+        this.path = Path.of(path);
+    }
+
+    static Path detect() {
+        return Stream.of(values())
+            .map(tp -> tp.path)
+            .filter(Files::isDirectory)
+            .findFirst()
+            .orElse(FALLBACK.path);
+    }
 }
 
 record RunningTest(String fileName, Process process) {}
