@@ -32,7 +32,7 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-08.4";
+String version = "2026-04-09.1";
 
 enum Log {
 
@@ -165,7 +165,7 @@ record ZbConfig(String jarDir, String jarFileName) {
     }
 }
 
-record TestResult(String fileName, boolean passed, String output) {}
+record TestResult(String fileName, boolean passed, String output, long durationMs) {}
 
 void main(String... args) {
     var config = parseArgs(args);
@@ -292,7 +292,7 @@ enum TestPath {
     }
 }
 
-record RunningTest(String fileName, Process process) {}
+record RunningTest(String fileName, Process process, long startNanos) {}
 
 static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
 
@@ -325,10 +325,10 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
                 .redirectErrorStream(true)
                 .start();
             var fileName = testFile.getFileName().toString().replace(".java", "");
-            running.add(new RunningTest(fileName, process));
+            running.add(new RunningTest(fileName, process, System.nanoTime()));
         } catch (IOException e) {
             var fileName = testFile.getFileName().toString().replace(".java", "");
-            running.add(new RunningTest(fileName, null));
+            running.add(new RunningTest(fileName, null, System.nanoTime()));
         }
     }
 
@@ -350,21 +350,29 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
 
 TestResult collectResult(RunningTest test) {
     if (test.process() == null)
-        return new TestResult(test.fileName(), false, "Failed to start");
+        return new TestResult(test.fileName(), false, "Failed to start", 0);
     try {
         var output = new String(test.process().getInputStream().readAllBytes());
         var exitCode = test.process().waitFor();
-        return new TestResult(test.fileName(), exitCode == 0, output.strip());
+        var durationMs = (System.nanoTime() - test.startNanos()) / 1_000_000;
+        return new TestResult(test.fileName(), exitCode == 0, output.strip(), durationMs);
     } catch (IOException | InterruptedException e) {
-        return new TestResult(test.fileName(), false, e.getMessage());
+        var durationMs = (System.nanoTime() - test.startNanos()) / 1_000_000;
+        return new TestResult(test.fileName(), false, e.getMessage(), durationMs);
     }
 }
 
+String formatDuration(long ms) {
+    if (ms < 1000) return ms + "ms";
+    return "%.1fs".formatted(ms / 1000.0);
+}
+
 void printResult(TestResult result) {
+    var duration = " (%s)".formatted(formatDuration(result.durationMs()));
     if (result.passed()) {
-        Log.info("  ✓ " + result.fileName());
+        Log.info("  ✓ " + result.fileName() + duration);
     } else {
-        Log.error("  ✗ " + result.fileName());
+        Log.error("  ✗ " + result.fileName() + duration);
         if (!result.output().isEmpty()) {
             result.output().lines().forEach(line ->
                 Log.error("    " + line));
@@ -375,12 +383,13 @@ void printResult(TestResult result) {
 void reportResults(List<TestResult> results) {
     var passed = results.stream().filter(TestResult::passed).count();
     var failed = results.size() - passed;
+    var totalMs = results.stream().mapToLong(TestResult::durationMs).max().orElse(0);
 
     System.out.println();
     if (failed == 0) {
-        Log.info("%d tests passed".formatted(results.size()));
+        Log.info("%d tests passed in %s".formatted(results.size(), formatDuration(totalMs)));
     } else {
-        Log.error("%d of %d tests failed".formatted(failed, results.size()));
+        Log.error("%d of %d tests failed in %s".formatted(failed, results.size(), formatDuration(totalMs)));
     }
     System.exit(failed > 0 ? 1 : 0);
 }
