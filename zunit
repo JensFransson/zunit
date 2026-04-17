@@ -192,6 +192,7 @@ void main(String... args) {
     var results = new ArrayList<TestResult>();
 
     if (!testFiles.isEmpty()) {
+        Log.info("Unit Tests");
         results.addAll(runTests(testFiles, classpath, config.verbose(), false));
     }
 
