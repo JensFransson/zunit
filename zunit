@@ -7,10 +7,12 @@
  * java --source 25. No compilation step, no JUnit, no dependencies.
  *
  * Test convention:
- *   - Test files: name ends with "Test.java"
+ *   - Unit test files: name ends with "Test.java"
+ *   - Integration test files: name ends with "IT.java"
  *   - Each test file is a self-contained Java source script
  *   - Must have a void main() (implicit in Java 25)
  *   - Failure: any thrown exception or non-zero exit = failed
+ *   - Unit tests run first, integration tests run after
  *
  * Test source auto-detection (in order):
  *   src/test/java/                        (Maven)
@@ -32,12 +34,13 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-09.1";
+String version = "2026-04-17.1";
 
 enum Log {
 
     ERROR(Color.BRIGHT_RED, System.err),
     INFO(Color.BRIGHT_GREEN, System.out),
+    INTEGRATION(Color.BRIGHT_CYAN, System.out),
     WARNING(Color.WARM_YELLOW, System.out),
     PROGRESS(Color.WARM_YELLOW, System.out),
     DEBUG(Color.SOFT_PURPLE, System.out);
@@ -48,6 +51,7 @@ enum Log {
         WARM_YELLOW("\033[38;5;220m"),
         BRIGHT_RED("\033[38;5;196m"),
         BRIGHT_GREEN("\033[38;5;46m"),
+        BRIGHT_CYAN("\033[38;5;51m"),
         SOFT_PURPLE("\033[38;5;129m");
 
         String code;
@@ -71,6 +75,10 @@ enum Log {
 
     static void info(String message) {
         INFO.out(message);
+    }
+
+    static void integration(String message) {
+        INTEGRATION.out(message);
     }
 
     static void debug(String message) {
@@ -173,14 +181,26 @@ void main(String... args) {
     Log.info("zunit " + version);
 
     var classpath = resolveClasspath(config.classpath(), config.verbose());
-    var testFiles = discoverTests(config.testPath(), config.verbose());
+    var testFiles = discoverTests(config.testPath(), config.verbose(), "Test.java");
+    var integrationTests = discoverTests(config.testPath(), config.verbose(), "IT.java");
 
-    if (testFiles.isEmpty()) {
+    if (testFiles.isEmpty() && integrationTests.isEmpty()) {
         Log.error("No test files found");
         System.exit(2);
     }
 
-    var results = runTests(testFiles, classpath, config.verbose());
+    var results = new ArrayList<TestResult>();
+
+    if (!testFiles.isEmpty()) {
+        results.addAll(runTests(testFiles, classpath, config.verbose(), false));
+    }
+
+    if (!integrationTests.isEmpty()) {
+        System.out.println();
+        Log.integration("Integration Tests");
+        results.addAll(runTests(integrationTests, classpath, config.verbose(), true));
+    }
+
     reportResults(results);
 }
 
@@ -247,7 +267,7 @@ enum Classpath {
     }
 }
 
-List<Path> discoverTests(String explicitPath, boolean verbose) {
+List<Path> discoverTests(String explicitPath, boolean verbose, String suffix) {
     var searchDir = explicitPath != null
         ? Path.of(explicitPath)
         : TestPath.detect();
@@ -261,7 +281,7 @@ List<Path> discoverTests(String explicitPath, boolean verbose) {
 
     try (var paths = Files.walk(searchDir)) {
         var tests = paths
-            .filter(p -> p.getFileName().toString().endsWith("Test.java"))
+            .filter(p -> p.getFileName().toString().endsWith(suffix))
             .sorted()
             .toList();
         if (verbose) tests.forEach(t -> Log.debug("Found: " + t));
@@ -313,7 +333,7 @@ void stopSpinner(Thread spinner) {
     try { spinner.join(); } catch (InterruptedException e) {}
 }
 
-List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose) {
+List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose, boolean integration) {
     // Start all test processes concurrently
     var running = new ArrayList<RunningTest>();
     for (var testFile : testFiles) {
@@ -333,7 +353,8 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
     }
 
     // Show launched tests
-    running.forEach(test -> Log.info("  ⧖ " + test.fileName()));
+    var log = integration ? Log.INTEGRATION : Log.INFO;
+    running.forEach(test -> log.out("  ⧖ " + test.fileName()));
     System.out.println();
 
     // Collect results with spinner feedback
@@ -343,7 +364,7 @@ List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbos
         var result = collectResult(test);
         stopSpinner(spinner);
         results.add(result);
-        printResult(result);
+        printResult(result, integration);
     }
     return results;
 }
@@ -367,10 +388,11 @@ String formatDuration(long ms) {
     return "%.1fs".formatted(ms / 1000.0);
 }
 
-void printResult(TestResult result) {
+void printResult(TestResult result, boolean integration) {
     var duration = " (%s)".formatted(formatDuration(result.durationMs()));
     if (result.passed()) {
-        Log.info("  ✓ " + result.fileName() + duration);
+        var log = integration ? Log.INTEGRATION : Log.INFO;
+        log.out("  ✓ " + result.fileName() + duration);
     } else {
         Log.error("  ✗ " + result.fileName() + duration);
         if (!result.output().isEmpty()) {
@@ -404,7 +426,8 @@ void printUsage() {
         %s
 
         Test convention:
-          - Test files: *Test.java source files
+          - Unit tests: *Test.java source files (run first)
+          - Integration tests: *IT.java source files (run after)
           - Each file is a self-contained Java script with void main()
           - Failure: any thrown exception or non-zero exit = failed
 
