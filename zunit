@@ -34,7 +34,7 @@
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-17.1";
+String version = "2026-04-17.2";
 
 enum Log {
 
@@ -189,20 +189,27 @@ void main(String... args) {
         System.exit(2);
     }
 
-    var results = new ArrayList<TestResult>();
+    var unitResults = List.<TestResult>of();
+    var itResults = List.<TestResult>of();
 
     if (!testFiles.isEmpty()) {
         Log.info("Unit Tests");
-        results.addAll(runTests(testFiles, classpath, config.verbose(), false));
+        unitResults = runTests(testFiles, classpath, config.verbose(), false);
+        reportPhaseResults(unitResults, false);
     }
 
     if (!integrationTests.isEmpty()) {
         System.out.println();
         Log.integration("Integration Tests");
-        results.addAll(runTests(integrationTests, classpath, config.verbose(), true));
+        itResults = runTests(integrationTests, classpath, config.verbose(), true);
+        reportPhaseResults(itResults, true);
     }
 
-    reportResults(results);
+    var allResults = new ArrayList<TestResult>();
+    allResults.addAll(unitResults);
+    allResults.addAll(itResults);
+    var totalMs = phaseMaxMs(unitResults) + phaseMaxMs(itResults);
+    reportResults(allResults, totalMs);
 }
 
 Config parseArgs(String[] args) {
@@ -403,10 +410,26 @@ void printResult(TestResult result, boolean integration) {
     }
 }
 
-void reportResults(List<TestResult> results) {
+void reportPhaseResults(List<TestResult> results, boolean integration) {
     var passed = results.stream().filter(TestResult::passed).count();
     var failed = results.size() - passed;
     var totalMs = results.stream().mapToLong(TestResult::durationMs).max().orElse(0);
+    var log = integration ? Log.INTEGRATION : Log.INFO;
+
+    if (failed == 0) {
+        log.out("%d passed in %s".formatted(results.size(), formatDuration(totalMs)));
+    } else {
+        Log.error("%d of %d failed in %s".formatted(failed, results.size(), formatDuration(totalMs)));
+    }
+}
+
+long phaseMaxMs(List<TestResult> results) {
+    return results.stream().mapToLong(TestResult::durationMs).max().orElse(0);
+}
+
+void reportResults(List<TestResult> results, long totalMs) {
+    var passed = results.stream().filter(TestResult::passed).count();
+    var failed = results.size() - passed;
 
     System.out.println();
     if (failed == 0) {
