@@ -1,12 +1,13 @@
 # zunit
 
-Zero-dependency, single-file Java test runner. Discovers `*Test.java` source files and runs each directly via `java --source 25` in a separate process. No compilation step, no JUnit, no build tool required — just run zunit and go. Each test gets its own JVM — full execution isolation with zero shared state.
+Zero-dependency, single-file Java test runner. Discovers `*Test.java` and `*IT.java` source files and runs each directly via `java --source 25` in a separate process. No compilation step, no JUnit, no build tool required — just run zunit and go. Each test gets its own JVM — full execution isolation with zero shared state.
 
 ![zunit](zunit.png)
 
 ## Test Convention
 
-- **Test files**: name ends with `Test.java`
+- **Unit tests**: name ends with `Test.java`
+- **Integration tests**: name ends with `IT.java` — run after unit tests
 - Each file is a self-contained Java source script with `void main()`
 - **Execution isolation**: each test runs in its own JVM process — no shared state, no interference between tests
 - Failure: any thrown exception or non-zero exit = failed
