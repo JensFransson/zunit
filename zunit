@@ -30,11 +30,12 @@
  *   zunit                                 # auto-detect and run
  *   zunit -cp:target/classes              # explicit classpath
  *   zunit -tp:test/                       # explicit test path
+ *   zunit -skip-it                        # skip integration tests
  *
  * Logging based on https://github.com/AdamBien/zcl
  */
 
-String version = "2026-04-17.2";
+String version = "2026-04-17.3";
 
 enum Log {
 
@@ -103,7 +104,8 @@ enum Arg {
     HELP("-help", "Show this help"),
     CP("-cp", "Override classpath for main classes"),
     TP("-tp", "Override test source path"),
-    VERBOSE("-verbose", "Show debug info");
+    VERBOSE("-verbose", "Show debug info"),
+    SKIP_IT("-skip-it", "Skip integration tests");
 
     final String option;
     final String description;
@@ -139,7 +141,7 @@ enum Arg {
     }
 }
 
-record Config(String classpath, String testPath, boolean verbose) {}
+record Config(String classpath, String testPath, boolean verbose, boolean skipIt) {}
 
 record ZbConfig(String jarDir, String jarFileName) {
     static final Path ZB_FILE = Path.of(".zb");
@@ -182,7 +184,9 @@ void main(String... args) {
 
     var classpath = resolveClasspath(config.classpath(), config.verbose());
     var testFiles = discoverTests(config.testPath(), config.verbose(), "Test.java");
-    var integrationTests = discoverTests(config.testPath(), config.verbose(), "IT.java");
+    var integrationTests = config.skipIt()
+        ? List.<Path>of()
+        : discoverTests(config.testPath(), config.verbose(), "IT.java");
 
     if (testFiles.isEmpty() && integrationTests.isEmpty()) {
         Log.error("No test files found");
@@ -216,6 +220,7 @@ Config parseArgs(String[] args) {
     String classpath = null;
     String testPath = null;
     var verbose = false;
+    var skipIt = false;
 
     for (var arg : args) {
         switch (Arg.from(arg)) {
@@ -223,13 +228,14 @@ Config parseArgs(String[] args) {
             case CP -> classpath = extractValue(arg);
             case TP -> testPath = extractValue(arg);
             case VERBOSE -> verbose = true;
+            case SKIP_IT -> skipIt = true;
             case null -> {
                 if (arg.startsWith("-")) Log.stop("Unknown option: " + arg);
                 Log.stop("Unknown argument: " + arg);
             }
         }
     }
-    return new Config(classpath, testPath, verbose);
+    return new Config(classpath, testPath, verbose, skipIt);
 }
 
 String extractValue(String arg) {
@@ -472,6 +478,7 @@ void printUsage() {
           zunit -cp:zbo/app.jar               Explicit classpath
           zunit -tp:test/                     Explicit test source path
           zunit -verbose                      Show debug output
+          zunit -skip-it                      Skip integration tests
         """.formatted(Arg.usage()));
     System.exit(0);
 }
