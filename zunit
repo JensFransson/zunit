@@ -2,10 +2,10 @@
 
 /**
  * zunit - Minimal, zero-dependency test runner for Java.
- *
+ * <p>
  * Discovers *Test.java source files and runs each directly via
  * java --source 25. No compilation step, no JUnit, no dependencies.
- *
+ * <p>
  * Test convention:
  *   - Unit test files: name ends with "Test.java"
  *   - Integration test files: name ends with "IT.java"
@@ -13,26 +13,26 @@
  *   - Must have a void main() (implicit in Java 25)
  *   - Failure: any thrown exception or non-zero exit = failed
  *   - Unit tests run first, integration tests run after
- *
+ * <p>
  * Test source auto-detection (in order):
  *   src/test/java/                        (Maven)
  *   test/                                 (simple)
  *   .                                     (fallback)
- *
+ * <p>
  * Classpath auto-detection (in order):
  *   .zb config (jar.dir + jar.file.name)  (zb config)
  *   zbo/app.jar                           (zb default)
  *   target/classes                        (Maven)
  *   classes/                              (simple)
  *   .                                     (fallback)
- *
+ * <p>
  * Examples:
  *   zunit                                 # auto-detect and run
  *   zunit -cp:target/classes              # explicit classpath
  *   zunit -tp:test/                       # explicit test path
  *   zunit -skip-it                        # skip integration tests
- *
- * Logging based on https://github.com/AdamBien/zcl
+ * <p>
+ * Logging based on <a href="https://github.com/AdamBien/zcl">zcl</a>
  */
 
 String version = "2026-04-17.3";
@@ -46,7 +46,7 @@ enum Log {
     PROGRESS(Color.WARM_YELLOW, System.out),
     DEBUG(Color.SOFT_PURPLE, System.out);
 
-    PrintStream out;
+    final PrintStream out;
 
     enum Color {
         WARM_YELLOW("\033[38;5;220m"),
@@ -55,14 +55,15 @@ enum Log {
         BRIGHT_CYAN("\033[38;5;51m"),
         SOFT_PURPLE("\033[38;5;129m");
 
-        String code;
+        final String code;
 
         Color(String code) {
             this.code = code;
         }
     }
 
-    String value;
+    final String value;
+
     static final String RESET = "\u001B[0m";
 
     Log(Color color, PrintStream out) {
@@ -70,6 +71,7 @@ enum Log {
         this.out = out;
     }
 
+    @SuppressWarnings("RedundantStringFormatCall")
     void out(String message) {
         this.out.println(this.value.formatted(message));
     }
@@ -78,6 +80,7 @@ enum Log {
         INFO.out(message);
     }
 
+    @SuppressWarnings("SameParameterValue")
     static void integration(String message) {
         INTEGRATION.out(message);
     }
@@ -91,7 +94,7 @@ enum Log {
     }
 
     static void progress(String message) {
-        PROGRESS.out.print(PROGRESS.value.formatted(message));
+        PROGRESS.out.printf(PROGRESS.value, message);
     }
 
     static void stop(String message) {
@@ -131,8 +134,7 @@ enum Arg {
         return Stream.of(values())
             .map(a -> {
                 var label = switch (a) {
-                    case CP -> a.option + ":<path>";
-                    case TP -> a.option + ":<path>";
+                    case CP, TP -> a.option + ":<path>";
                     default -> a.option;
                 };
                 return "  %-20s %s".formatted(label, a.description);
@@ -274,7 +276,7 @@ enum Classpath {
 
         return Stream.of(values())
             .map(cp -> cp.path)
-            .filter(p -> Files.exists(p))
+                     .filter(Files::exists)
             .findFirst()
             .orElse(FALLBACK.path)
             .toString();
@@ -330,6 +332,7 @@ record RunningTest(String fileName, Process process, long startNanos) {}
 
 static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
 
+@SuppressWarnings("BusyWait")
 Thread startSpinner(String label) {
     return Thread.startVirtualThread(() -> {
         var i = 0;
@@ -344,7 +347,10 @@ Thread startSpinner(String label) {
 
 void stopSpinner(Thread spinner) {
     spinner.interrupt();
-    try { spinner.join(); } catch (InterruptedException e) {}
+    try {
+        spinner.join();
+    }
+    catch (InterruptedException e) { /* ignored */}
 }
 
 List<TestResult> runTests(List<Path> testFiles, String classpath, boolean verbose, boolean integration) {
